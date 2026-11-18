@@ -1,6 +1,8 @@
 // Launch Multiple Radar — the page's logic. Plain script, no imports, no network:
 // every figure comes from window.RADAR, the data.js the entry's program writes
 // beside this page. Board view, detail view and filters all render from it.
+// The price every row states: implied = TVL x category multiple x momentum
+// factor x age factor — the build-up is drawn stage by stage in renderDetail.
 (function () {
   'use strict';
   var D = window.RADAR;
@@ -39,6 +41,8 @@
   // ------------------------------------------- confidence and risk, from the row's own figures
   // A price is only as good as the comparables behind it. The grade and the flags
   // below are pure functions of fields every row already carries — no new data.
+  // confidence(row) — the evidence grade behind a price: A from 8+ tokenized
+  // comparables in the row's category, B from 3 or more, C below that.
   function confidence(r) {
     var n = r.model.category_comparables;
     if (n >= 8) return { grade: 'A', label: 'Solid evidence', cls: 'conf-a' };
@@ -46,6 +50,8 @@
     if (n >= 1) return { grade: 'C', label: 'Thin evidence', cls: 'conf-c' };
     return { grade: 'C', label: 'No direct comparables — priced on the global median', cls: 'conf-c' };
   }
+  // riskFlags(row) — the warnings that fire on a row's own figures alone:
+  // thin evidence, hard shrinkage, a momentum extreme, youth, one chain.
   function riskFlags(r) {
     var flags = [];
     var n = r.model.category_comparables;
@@ -61,6 +67,8 @@
     if (r.chains.length <= 1) flags.push({ short: 'Single chain', full: 'Single-chain footprint' + (r.chains.length === 1 ? ' (' + r.chains[0] + ')' : '') });
     return flags;
   }
+  // verdictLine(row) — one sentence justifying the price: the multiple, the
+  // comparables behind it, the 7-day TVL move and the protocol's age.
   function verdictLine(r) {
     var c = confidence(r);
     var bits = [];
@@ -81,14 +89,22 @@
     '<div class="mstat"><b>' + D.as_of + '</b><span>snapshot date</span></div>';
 
   var m = D.model;
+  var watchCount = rows.filter(function (r) { return r.on_watchlist; }).length;
+  var compTotal = D.categories.reduce(function (a, c) { return a + c.comps; }, 0);
   document.getElementById('model-strip').innerHTML =
-    '<b>How a price is made.</b> For each category, take the tokenized protocols in this snapshot and their ' +
-    'market-cap / TVL multiples; the category\u2019s working multiple is its median, shrunk toward the global median of ' +
-    '<b>' + m.global_multiple.toFixed(3) + '</b> with a weight of ' + m.shrink_k + ' phantom observations. Then ' +
-    '<span class="formula">implied = TVL \u00d7 category multiple \u00d7 momentum factor \u00d7 age factor</span> ' +
-    'where momentum reads the 7-day TVL change (clamped to ' + m.momentum_clamp[0] + '%\u2026+' + m.momentum_clamp[1] +
-    '%, weight ' + m.momentum_weight + ') and the age factor runs ' + m.age_base + '\u2013' + (m.age_base + m.age_span).toFixed(2) +
-    ' over ' + m.age_full_days + ' tokenless days. No name is special-cased; open any protocol for its own arithmetic.';
+    '<b>How this radar works.</b> ' +
+    '<b>1 · Coverage.</b> ' + rows.length + ' pre-token protocols ranked from the snapshot of ' + D.as_of +
+    ' (' + D.protocol_count + ' protocols at or above $5M TVL): all ' + watchCount + ' watchlist protocols, plus ' +
+    (rows.length - watchCount) + ' early protocols below that floor. Every row states the implied value it is ranked by. ' +
+    '<b>2 · The price.</b> <span class="formula">implied = TVL \u00d7 category multiple \u00d7 momentum factor \u00d7 age factor</span> ' +
+    'The category multiple is the median market-cap / TVL of the category\u2019s tokenized protocols (' + compTotal +
+    ' across all categories), winsorized to ' + m.mult_floor + '\u2013' + m.mult_ceil + ' and shrunk toward the global median of ' +
+    '<b>' + m.global_multiple.toFixed(3) + '</b> with a weight of ' + m.shrink_k + ' phantom observations; momentum reads the ' +
+    '7-day TVL change (clamped to ' + m.momentum_clamp[0] + '%\u2026+' + m.momentum_clamp[1] + '%, weight ' + m.momentum_weight +
+    ') and the age factor runs ' + m.age_base + '\u2013' + (m.age_base + m.age_span).toFixed(2) + ' over ' + m.age_full_days +
+    ' tokenless days. No name is special-cased; open any protocol for its own arithmetic. ' +
+    '<b>3 · Kept apart.</b> Protocols whose token already trades are never ranked here; they serve only as the ' +
+    'comparables those multiples are learned from (the \u201cAlready trading\u201d panel below).';
 
   document.getElementById('source-line').textContent =
     'Snapshot: ' + D.source + ' \u00b7 ' + D.protocol_count + ' protocols at or above $5M TVL \u00b7 watchlist floor ' + money(D.floor_usd) + '.';
@@ -253,6 +269,8 @@
     var steps = r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
     var conf = confidence(r);
     var flags = riskFlags(r);
+    // The price build-up, stage by stage: TVL, then x category multiple,
+    // x momentum, x age — the last stage is the stated implied value.
     // Waterfall: each stage's value on a log scale, so a 0.67x and a 1.24x both stay visible.
     var stages = [
       { label: 'TVL alone', value: r.tvl_usd },
@@ -274,6 +292,12 @@
         '<h2>' + esc(r.name) + (r.on_watchlist ? ' <span class="watch-badge">Watchlist</span>' : '') + '</h2>' +
         '<p class="detail-sub">Rank #' + r.rank + ' of ' + rows.length + ' \u00b7 ' + esc(r.category || 'Uncategorized') +
           ' \u00b7 records no token in the snapshot \u00b7 tracked since ' + esc(r.listed_at || 'an unreported date') + '</p>' +
+        '<p class="sep-line">' + (r.model.category_comparables > 0
+          ? 'Kept apart: no token trades for ' + esc(r.name) + ' in this snapshot, so it stands here as a launch candidate. ' +
+            'It is priced by ' + r.model.category_comparables + ' tokenized comparable' + (r.model.category_comparables === 1 ? '' : 's') +
+            ' in ' + esc(r.category || 'Uncategorized') + ' (table below) \u2014 protocols that already trade are used as evidence only, and are ranked nowhere on this board.'
+          : 'Kept apart: no token trades for ' + esc(r.name) + ' in this snapshot, and none trades in its category either, ' +
+            'so the global median multiple carries its price \u2014 protocols that already trade are used as evidence only, and are ranked nowhere on this board.') + '</p>' +
         '<p class="verdict"><span class="conf-chip ' + conf.cls + '">Evidence ' + conf.grade + '</span> ' + esc(verdictLine(r)) + '</p>' +
         '<div class="stat-grid">' +
           '<div><span>Total value locked</span><b>' + moneyFull(r.tvl_usd) + '</b></div>' +
