@@ -96,3 +96,30 @@ states a cost and a time, as the judge's criteria ask.
   three-month-old one. It is a prior, and it is capped at +15%.
 - **"Records no token" is about the record.** DefiLlama's fields can lag a
   quiet launch; the dashboard words it that way throughout.
+
+## Polish round (2026-11-18, local only — not yet submitted)
+
+Dashboard-only upgrade; `main.ts` and the valuation model are untouched, and a
+re-run reproduces the identical `board.json`. Everything new is derived in
+`radar.js` from fields each row already carried:
+
+- **Evidence grade (A/B/C) per protocol** from its comparable count, shown as a
+  chip on every board row and in the detail verdict line, plus a new
+  "Evidence behind the price" filter (solid ≥3 comps / thin ≤2; verified live:
+  85 + 95 = 180 rows, no page errors).
+- **Risk flags** computed per row — thin/no comparables, hard shrinkage
+  (raw vs working multiple ≥1.8× apart), TVL falling ≥15% or up ≥60% in 7 days,
+  age <90 days, single chain — as short chips on the board and a full
+  "Read the risk before you farm" box in the detail view.
+- **Highlights strip**: biggest launch candidate, fastest riser in the top 60,
+  and strongest-evidence row, each computed from the board and clickable.
+- **Detail waterfall chart** (log-scale bars: TVL → ×multiple → ×momentum →
+  ×age → implied), comparable-multiple bars, and matching bars in the
+  category-evidence panel; implied-value bars on board rows, gold #1 card,
+  sticky board header.
+- Screenshots re-rendered at 1365×900 (JPEG 147K / 200K / 147K). Dashboard
+  source total 37,051 bytes, inside the judge's 65,536-byte read;
+  `dossier.json` 944K, inside the 1.5 MiB cap.
+
+## Submission record (2026-11-18)
+- Submitted signed from @kontenlaris-studio: submission_id 01a1ed49-6bb3-76a5-9fe8-ac531b03cb9b, claim code AF-MX0PT-XP9F9-HX7FD-PWH17, commit 1465ab7747762def96b057ab200740fc28935741 (GitHub HEAD; all 13 files verified byte-identical), stage "checked", ALL checks pass (25 pass, 3 skip, 0 fail). Free entry (no fee for this competition). Pairwise judging until entries close 14 Dec 2026 17:00 WIB; result due 28 Dec 2026. Prizes $1,325: 1st $1,000, 2nd-5th $50, 6th-10th $25.
