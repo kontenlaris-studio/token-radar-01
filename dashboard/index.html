@@ -23,6 +23,8 @@
 <main>
   <section class="model-strip" id="model-strip" aria-label="How the board is priced"></section>
 
+  <section class="insights" id="insights" aria-label="Radar highlights"></section>
+
   <section class="controls" aria-label="Board controls">
     <label class="ctl ctl-search">
       <span>Search</span>
@@ -54,6 +56,14 @@
         <option value="change">7-day change, high to low</option>
         <option value="age">Age, oldest first</option>
         <option value="multiple">Category multiple, high to low</option>
+      </select>
+    </label>
+    <label class="ctl">
+      <span>Evidence behind the price</span>
+      <select id="f-evidence">
+        <option value="">Any evidence</option>
+        <option value="solid">Solid — 3+ comparables</option>
+        <option value="thin">Thin — 2 or fewer comparables</option>
       </select>
     </label>
     <label class="ctl ctl-check">

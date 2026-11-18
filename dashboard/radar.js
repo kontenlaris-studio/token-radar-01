@@ -36,6 +36,42 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  // ------------------------------------------- confidence and risk, from the row's own figures
+  // A price is only as good as the comparables behind it. The grade and the flags
+  // below are pure functions of fields every row already carries — no new data.
+  function confidence(r) {
+    var n = r.model.category_comparables;
+    if (n >= 8) return { grade: 'A', label: 'Solid evidence', cls: 'conf-a' };
+    if (n >= 3) return { grade: 'B', label: 'Fair evidence', cls: 'conf-b' };
+    if (n >= 1) return { grade: 'C', label: 'Thin evidence', cls: 'conf-c' };
+    return { grade: 'C', label: 'No direct comparables — priced on the global median', cls: 'conf-c' };
+  }
+  function riskFlags(r) {
+    var flags = [];
+    var n = r.model.category_comparables;
+    if (n === 0) flags.push({ short: 'No comparables', full: 'No tokenized comparable in its category — the global median carries this price' });
+    else if (n <= 2) flags.push({ short: 'Thin evidence · ' + n + ' comp' + (n === 1 ? '' : 's'), full: 'Only ' + n + ' tokenized comparable' + (n === 1 ? '' : 's') + ' behind the category multiple' });
+    var raw = r.model.category_raw_median, work = r.model.category_multiple;
+    if (n > 0 && raw > 0 && (raw / work >= 1.8 || work / raw >= 1.8)) {
+      flags.push({ short: 'Shrunk hard ' + raw.toFixed(2) + '\u00d7\u2192' + work.toFixed(2) + '\u00d7', full: 'Shrinkage moved the multiple hard: raw median ' + raw.toFixed(2) + '\u00d7 \u2192 working ' + work.toFixed(2) + '\u00d7' });
+    }
+    if (r.change_7d !== null && r.change_7d <= -15) flags.push({ short: 'TVL falling', full: 'TVL fell ' + Math.abs(r.change_7d).toFixed(1) + '% in 7 days — momentum is a headwind, not a tailwind' });
+    if (r.change_7d !== null && r.change_7d >= 60) flags.push({ short: 'One hot week', full: 'TVL up ' + r.change_7d.toFixed(1) + '% in 7 days — one hot week may be incentive-driven; the model clamps it' });
+    if (r.age_days !== null && r.age_days < 90) flags.push({ short: 'Very young', full: 'Very young: ' + r.age_days + ' tracked days with no token' });
+    if (r.chains.length <= 1) flags.push({ short: 'Single chain', full: 'Single-chain footprint' + (r.chains.length === 1 ? ' (' + r.chains[0] + ')' : '') });
+    return flags;
+  }
+  function verdictLine(r) {
+    var c = confidence(r);
+    var bits = [];
+    bits.push('Priced at ' + r.model.category_multiple.toFixed(2) + '\u00d7 TVL from ' +
+      (r.model.category_comparables === 0 ? 'the global median (no direct comparables)' :
+        r.model.category_comparables + ' tokenized comparable' + (r.model.category_comparables === 1 ? '' : 's')));
+    if (r.change_7d !== null) bits.push('7-day TVL ' + (r.change_7d >= 0 ? 'grew ' : 'fell ') + Math.abs(r.change_7d).toFixed(1) + '%');
+    bits.push(ageText(r.age_days));
+    return c.label + '. ' + bits.join(' \u00b7 ') + '.';
+  }
+
   // ------------------------------------------------------------- masthead and model strip
   var totalImplied = rows.reduce(function (a, r) { return a + r.implied_value_usd; }, 0);
   document.getElementById('masthead-stats').innerHTML =
@@ -57,6 +93,32 @@
   document.getElementById('source-line').textContent =
     'Snapshot: ' + D.source + ' \u00b7 ' + D.protocol_count + ' protocols at or above $5M TVL \u00b7 watchlist floor ' + money(D.floor_usd) + '.';
 
+  // ------------------------------------------------------------- highlights strip
+  // Three entry points into the board, each computed from the rows themselves.
+  (function renderInsights() {
+    var byGrowth = rows.filter(function (r) { return r.rank <= 60 && r.change_7d !== null; })
+      .slice().sort(function (a, b) { return b.change_7d - a.change_7d; })[0];
+    var solid = rows.filter(function (r) { return r.model.category_comparables >= 8; })
+      .slice().sort(function (a, b) { return b.implied_value_usd - a.implied_value_usd; })[0];
+    var thinCount = rows.filter(function (r) { return r.model.category_comparables <= 2; }).length;
+    function card(kicker, r, line) {
+      return '<button type="button" class="insight-card" data-slug="' + esc(r.slug) + '">' +
+        '<span class="insight-kicker">' + kicker + '</span>' +
+        '<span class="insight-name">' + esc(r.name) + ' <span class="insight-val">' + money(r.implied_value_usd) + '</span></span>' +
+        '<span class="insight-line">' + line + '</span></button>';
+    }
+    document.getElementById('insights').innerHTML =
+      card('Biggest launch candidate', rows[0],
+        'Rank #1 \u00b7 ' + money(rows[0].tvl_usd) + ' TVL at a ' + rows[0].model.category_multiple.toFixed(2) + '\u00d7 category multiple') +
+      (byGrowth ? card('Fastest riser in the top 60', byGrowth,
+        '+' + byGrowth.change_7d.toFixed(1) + '% TVL in 7 days \u00b7 now rank #' + byGrowth.rank) : '') +
+      (solid ? card('Strongest evidence on the board', solid,
+        solid.model.category_comparables + ' tokenized comparables behind its ' + solid.model.category_multiple.toFixed(2) + '\u00d7 multiple \u00b7 ' + thinCount + ' of ' + rows.length + ' rows price on thin evidence instead') : '');
+    Array.prototype.forEach.call(document.querySelectorAll('.insight-card'), function (c) {
+      c.addEventListener('click', function () { location.hash = '#/p/' + c.getAttribute('data-slug'); });
+    });
+  })();
+
   // ------------------------------------------------------------- filters
   var el = {
     search: document.getElementById('f-search'),
@@ -65,6 +127,7 @@
     value: document.getElementById('f-value'),
     sort: document.getElementById('f-sort'),
     watch: document.getElementById('f-watch'),
+    evidence: document.getElementById('f-evidence'),
     count: document.getElementById('result-count'),
     board: document.getElementById('board-rows'),
     empty: document.getElementById('empty-note'),
@@ -96,6 +159,7 @@
       minValue: el.value.value === '' ? 0 : Number(el.value.value),
       sort: el.sort.value,
       watchOnly: el.watch.checked,
+      evidence: el.evidence.value,
     };
   }
 
@@ -103,6 +167,8 @@
     var f = currentFilters();
     var out = rows.filter(function (r) {
       if (f.watchOnly && !r.on_watchlist) return false;
+      if (f.evidence === 'solid' && r.model.category_comparables < 3) return false;
+      if (f.evidence === 'thin' && r.model.category_comparables > 2) return false;
       if (f.category && (r.category || 'Uncategorized') !== f.category) return false;
       if (f.chain && r.chains.indexOf(f.chain) < 0) return false;
       if (f.minValue && r.implied_value_usd < f.minValue) return false;
@@ -120,17 +186,26 @@
     return out;
   }
 
+  var topValue = rows.length ? rows[0].implied_value_usd : 1;
   function rowHtml(r) {
-    return '<button type="button" class="row-card board-grid" data-slug="' + esc(r.slug) + '">' +
+    var conf = confidence(r);
+    var flags = riskFlags(r).slice(0, 2).map(function (f) {
+      return '<span class="flag-chip" title="' + esc(f.full) + '">' + esc(f.short) + '</span>';
+    }).join('');
+    var barPct = Math.max(2, Math.round(100 * r.implied_value_usd / topValue));
+    return '<button type="button" class="row-card board-grid rank-' + (r.rank <= 3 ? r.rank : 'x') + '" data-slug="' + esc(r.slug) + '">' +
       '<span class="rank-chip">' + r.rank + '</span>' +
       '<span class="p-name">' + esc(r.name) +
         (r.on_watchlist ? ' <span class="watch-badge">Watchlist</span>' : '') +
-        '<span class="p-chains">' + esc(r.chains.slice(0, 3).join(' \u00b7 ') || 'chain unreported') + ' \u00b7 ' + ageText(r.age_days) + '</span></span>' +
+        ' <span class="conf-chip ' + conf.cls + '" title="' + esc(conf.label) + '">Evidence ' + conf.grade + '</span>' +
+        '<span class="p-chains">' + esc(r.chains.slice(0, 3).join(' \u00b7 ') || 'chain unreported') + ' \u00b7 ' + ageText(r.age_days) + '</span>' +
+        (flags ? '<span class="p-flags">' + flags + '</span>' : '') + '</span>' +
       '<span class="p-cat">' + esc(r.category || 'Uncategorized') + '</span>' +
       '<span class="num">' + money(r.tvl_usd) + '</span>' +
       '<span class="num">' + pct(r.change_7d) + '</span>' +
       '<span class="num">' + r.model.category_multiple.toFixed(2) + '\u00d7<small>' + r.model.category_comparables + ' comps</small></span>' +
-      '<span class="num value-num">' + money(r.implied_value_usd) + '</span>' +
+      '<span class="num value-num">' + money(r.implied_value_usd) +
+        '<span class="value-bar"><span style="width:' + barPct + '%"></span></span></span>' +
       '</button>';
   }
 
@@ -145,7 +220,7 @@
   }
 
   ['input', 'change'].forEach(function (evt) {
-    [el.search, el.category, el.chain, el.value, el.sort, el.watch].forEach(function (c) {
+    [el.search, el.category, el.chain, el.value, el.sort, el.watch, el.evidence].forEach(function (c) {
       c.addEventListener(evt, renderBoard);
     });
   });
@@ -169,16 +244,37 @@
 
   // ------------------------------------------------------------- detail view
   function renderDetail(r) {
+    var maxMult = Math.max.apply(null, (r.comparables || []).map(function (c) { return c.multiple; }).concat([r.model.category_multiple, 0.01]));
     var comps = (r.comparables || []).map(function (c) {
-      return '<tr><td>' + esc(c.name) + '</td><td>' + money(c.tvl_usd) + '</td><td>' + money(c.mcap_usd) + '</td><td>' + c.multiple.toFixed(2) + '\u00d7</td></tr>';
+      var w = Math.max(2, Math.round(100 * c.multiple / maxMult));
+      return '<tr><td>' + esc(c.name) + '</td><td>' + money(c.tvl_usd) + '</td><td>' + money(c.mcap_usd) + '</td>' +
+        '<td><span class="comp-bar"><span style="width:' + w + '%"></span></span>' + c.multiple.toFixed(2) + '\u00d7</td></tr>';
     }).join('');
     var steps = r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
+    var conf = confidence(r);
+    var flags = riskFlags(r);
+    // Waterfall: each stage's value on a log scale, so a 0.67x and a 1.24x both stay visible.
+    var stages = [
+      { label: 'TVL alone', value: r.tvl_usd },
+      { label: '\u00d7 category multiple ' + r.model.category_multiple.toFixed(3), value: r.tvl_usd * r.model.category_multiple },
+      { label: '\u00d7 momentum ' + r.model.momentum_factor.toFixed(3), value: r.tvl_usd * r.model.category_multiple * r.model.momentum_factor },
+      { label: '\u00d7 age ' + r.model.age_factor.toFixed(3) + ' = implied', value: r.implied_value_usd },
+    ];
+    var logMax = Math.log10(Math.max.apply(null, stages.map(function (s) { return s.value; })));
+    var logMin = Math.log10(Math.min.apply(null, stages.map(function (s) { return s.value; }))) - 0.15;
+    var waterfall = stages.map(function (s, i) {
+      var w = Math.round(8 + 92 * (Math.log10(s.value) - logMin) / Math.max(0.01, logMax - logMin));
+      return '<div class="wf-row' + (i === stages.length - 1 ? ' wf-total' : '') + '"><span class="wf-label">' + s.label + '</span>' +
+        '<span class="wf-track"><span class="wf-fill" style="width:' + w + '%"></span></span>' +
+        '<span class="wf-val">' + money(s.value) + '</span></div>';
+    }).join('');
     el.detailView.innerHTML =
       '<button type="button" class="back-btn" id="back-btn">\u2190 Back to the board</button>' +
       '<article class="detail-card">' +
         '<h2>' + esc(r.name) + (r.on_watchlist ? ' <span class="watch-badge">Watchlist</span>' : '') + '</h2>' +
         '<p class="detail-sub">Rank #' + r.rank + ' of ' + rows.length + ' \u00b7 ' + esc(r.category || 'Uncategorized') +
           ' \u00b7 records no token in the snapshot \u00b7 tracked since ' + esc(r.listed_at || 'an unreported date') + '</p>' +
+        '<p class="verdict"><span class="conf-chip ' + conf.cls + '">Evidence ' + conf.grade + '</span> ' + esc(verdictLine(r)) + '</p>' +
         '<div class="stat-grid">' +
           '<div><span>Total value locked</span><b>' + moneyFull(r.tvl_usd) + '</b></div>' +
           '<div><span>Implied token value</span><b>' + moneyFull(r.implied_value_usd) + '</b></div>' +
@@ -197,6 +293,11 @@
               '<div class="b-row"><span>Age factor (' + ageText(r.age_days) + ')</span><span>\u00d7 ' + r.model.age_factor.toFixed(3) + '</span></div>' +
               '<div class="b-row total"><span>Implied token value</span><span>' + moneyFull(r.implied_value_usd) + '</span></div>' +
             '</div>' +
+            '<div class="waterfall" aria-label="Value build-up chart">' + waterfall + '</div>' +
+            (flags.length
+              ? '<div class="risk-box"><h4>Read the risk before you farm</h4><ul>' +
+                flags.map(function (f) { return '<li>' + esc(f.full) + '</li>'; }).join('') + '</ul></div>'
+              : '<div class="risk-box risk-ok"><h4>No flags on this record</h4><p>Enough comparables, no shrinkage shock, no momentum or age warning fires on this protocol\u2019s own figures.</p></div>') +
             '<h3 style="margin-top:18px">The comparables behind the multiple</h3>' +
             (comps
               ? '<table class="comp-table"><thead><tr><th>Tokenized protocol</th><th>TVL</th><th>Market cap</th><th>Multiple</th></tr></thead><tbody>' + comps + '</tbody></table>'
@@ -212,10 +313,13 @@
   }
 
   // ------------------------------------------------------------- evidence panels
+  var catMax = Math.max.apply(null, D.categories.map(function (c) { return c.multiple; }));
   document.getElementById('categories-table').innerHTML =
     '<table class="comp-table"><thead><tr><th>Category</th><th>Comps</th><th>Raw median</th><th>Working multiple</th></tr></thead><tbody>' +
     D.categories.map(function (c) {
-      return '<tr><td>' + esc(c.category) + '</td><td>' + c.comps + '</td><td>' + c.raw_median.toFixed(3) + '\u00d7</td><td>' + c.multiple.toFixed(3) + '\u00d7</td></tr>';
+      var w = Math.max(2, Math.round(100 * c.multiple / catMax));
+      return '<tr><td>' + esc(c.category) + '</td><td>' + c.comps + '</td><td>' + c.raw_median.toFixed(3) + '\u00d7</td>' +
+        '<td><span class="comp-bar"><span style="width:' + w + '%"></span></span>' + c.multiple.toFixed(3) + '\u00d7</td></tr>';
     }).join('') + '</tbody></table>';
 
   document.getElementById('live-table').innerHTML =
