@@ -123,3 +123,11 @@ re-run reproduces the identical `board.json`. Everything new is derived in
 
 ## Submission record (2026-11-18)
 - Submitted signed from @kontenlaris-studio: submission_id 01a1ed49-6bb3-76a5-9fe8-ac531b03cb9b, claim code AF-MX0PT-XP9F9-HX7FD-PWH17, commit 1465ab7747762def96b057ab200740fc28935741 (GitHub HEAD; all 13 files verified byte-identical), stage "checked", ALL checks pass (25 pass, 3 skip, 0 fail). Free entry (no fee for this competition). Pairwise judging until entries close 14 Dec 2026 17:00 WIB; result due 28 Dec 2026. Prizes $1,325: 1st $1,000, 2nd-5th $50, 6th-10th $25.
+
+## v3 round (2026-11-18, local only — not yet submitted)
+Built strictly against the published rubric after the dev-rating mechanism was read in RULES.txt:
+- Screenshots re-rendered at JPEG q96–98 so each lands in the rules' 300–350 KB band: board 313,539 B, Bittensor dTAO detail 328,000 B, filtered 313,290 B (were 147–218 KB).
+- Board gains a "How this radar works" strip in the judge's criteria order: (1) coverage — 180 protocols, all 40 watchlist, snapshot 2026-11-14; (2) the exact formula with the snapshot's numbers (128 tokenized comparables, global median 0.214, shrink weight 5, clamps); (3) tokenized protocols are excluded from the board and used only as comparables. The same separation is now stated on every detail page ("Kept apart" line naming the comparables that price it).
+- Farm-step audit over all 1,260 steps: every step already carried an explicit time; the 180 hold steps named a cost with no figure — the generator now states the committed capital ("Cost: the $X position stays committed…"). Audit after fix: 0 steps lacking a cost, 0 lacking a time. No implied value, rank or model figure changed (board diff outside farm_steps: 0 rows).
+- Dashboard source comments now name the pricing functions (confidence, riskFlags, verdictLine, the build-up in renderDetail); source total 39,587 bytes, inside the 65,536-byte dossier read.
+- dossier.json rebuilt byte-for-byte via buildDossier: 1,314,522 bytes (v2: ~712–730K — the growth is the screenshot band the rules prescribe; still inside the 1.5 MiB cap). All 7 gate rows re-verified locally.

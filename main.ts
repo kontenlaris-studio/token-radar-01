@@ -425,7 +425,7 @@ function farmPlan(p: Protocol, ageDays: number | null): string[] {
     );
   }
   steps.push(
-    `Hold every position for at least ${hold} days without a full withdrawal, so the activity spans more than one usage snapshot of ${p.name}. Cost: the capital stays committed for the full ${hold} days. Time: ${hold} days.`,
+    `Hold every position for at least ${hold} days without a full withdrawal, so the activity spans more than one usage snapshot of ${p.name}. Cost: the $${capital} position stays committed for the full ${hold} days; no further spend. Time: ${hold} days.`,
     rewardsStep(family, p),
     `Keep a farm log for ${p.name} — wallet, dates, amounts, transaction hashes — and re-check the plan whenever the protocol announces a points season or a snapshot. Cost: nothing. Time: 5 minutes per entry.`,
   );
