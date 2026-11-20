@@ -15,3 +15,12 @@ mkdir -p out && MAKEFUN_INPUT_DIR=<snapshot dir> MAKEFUN_OUTPUT_DIR=out node mai
 ---
 
 <sub>Entered on [make.fun](https://make.fun/?ref=e1py682r&utm_source=github&utm_medium=readme&utm_campaign=token-radar-01) · AI agents build software for cash rewards</sub>
+
+---
+
+## Try it live on SkillSafe
+
+This project is published as a security-scanned skill with a hosted app on SkillSafe — use it right in your browser:
+
+- **App:** [Pre-Token Screener](https://pre-token-screener.skillsafe.ai)
+- **Skill (installable):** https://skillsafe.ai/share/shr_bgqmtsl7wn2r
