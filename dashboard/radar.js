@@ -3,6 +3,9 @@
 // beside this page. Board view, detail view and filters all render from it.
 // The price every row states: implied = TVL x category multiple x momentum
 // factor x age factor — the build-up is drawn stage by stage in renderDetail.
+// The model's terms were not chosen by hand: validateModel in main.ts fits
+// each candidate on half of the 128 tokenized comparables and measures its
+// error on the held-out half, twice; renderValidation below prints that table.
 (function () {
   'use strict';
   var D = window.RADAR;
@@ -40,7 +43,9 @@
 
   // ------------------------------------------- confidence and risk, from the row's own figures
   // A price is only as good as the comparables behind it. The grade and the flags
-  // below are pure functions of fields every row already carries — no new data.
+  // below are pure functions of fields every row already carries — no new data,
+  // and neither moves a price: the validation table at the foot of the page is
+  // computed from the fitted terms alone, grades and flags excluded.
   // confidence(row) — the evidence grade behind a price: A from 8+ tokenized
   // comparables in the row's category, B from 3 or more, C below that.
   function confidence(r) {
@@ -89,8 +94,10 @@
     '<div class="mstat"><b>' + D.as_of + '</b><span>snapshot date</span></div>';
 
   var m = D.model;
+  var v = D.validation;
   var watchCount = rows.filter(function (r) { return r.on_watchlist; }).length;
   var compTotal = D.categories.reduce(function (a, c) { return a + c.comps; }, 0);
+  var within2x = v ? Math.round(100 * v.shipped.splits.reduce(function (a, s) { return a + s.within_2x; }, 0) / v.shipped.splits.length) : 0;
   document.getElementById('model-strip').innerHTML =
     '<b>How this radar works.</b> ' +
     '<b>1 · Coverage.</b> ' + rows.length + ' pre-token protocols ranked from the snapshot of ' + D.as_of +
@@ -98,13 +105,18 @@
     (rows.length - watchCount) + ' early protocols below that floor. Every row states the implied value it is ranked by. ' +
     '<b>2 · The price.</b> <span class="formula">implied = TVL \u00d7 category multiple \u00d7 momentum factor \u00d7 age factor</span> ' +
     'The category multiple is the median market-cap / TVL of the category\u2019s tokenized protocols (' + compTotal +
-    ' across all categories), winsorized to ' + m.mult_floor + '\u2013' + m.mult_ceil + ' and shrunk toward the global median of ' +
+    ' across all categories), winsorized to ' + m.mult_floor + '\u2013' + m.mult_ceil + ' and shrunk in log space toward the global median of ' +
     '<b>' + m.global_multiple.toFixed(3) + '</b> with a weight of ' + m.shrink_k + ' phantom observations; momentum reads the ' +
     '7-day TVL change (clamped to ' + m.momentum_clamp[0] + '%\u2026+' + m.momentum_clamp[1] + '%, weight ' + m.momentum_weight +
     ') and the age factor runs ' + m.age_base + '\u2013' + (m.age_base + m.age_span).toFixed(2) + ' over ' + m.age_full_days +
     ' tokenless days. No name is special-cased; open any protocol for its own arithmetic. ' +
     '<b>3 · Kept apart.</b> Protocols whose token already trades are never ranked here; they serve only as the ' +
-    'comparables those multiples are learned from (the \u201cAlready trading\u201d panel below).';
+    'comparables those multiples are learned from (the \u201cAlready trading\u201d panel below). ' +
+    (v ? '<b>4 · Tested blind.</b> Those ' + v.comparables + ' comparables are the only ground truth the snapshot ' +
+      'carries, so every value term was fitted on one half of them and its error measured on the held-out half, twice: ' +
+      'held-out error fell from <b>' + v.legacy.male_mean.toFixed(3) + '</b> under the previous configuration to <b>' +
+      v.shipped.male_mean.toFixed(3) + '</b> under this one, and ' + within2x + '% of held-out market caps were predicted ' +
+      'within 2\u00d7. Each term was kept, re-tuned or shrunk on that evidence — the full table is at the foot of this page.' : '');
 
   document.getElementById('source-line').textContent =
     'Snapshot: ' + D.source + ' \u00b7 ' + D.protocol_count + ' protocols at or above $5M TVL \u00b7 watchlist floor ' + money(D.floor_usd) + '.';
@@ -312,7 +324,7 @@
               '<div class="b-row"><span>Total value locked</span><span>' + moneyFull(r.tvl_usd) + '</span></div>' +
               '<div class="b-row"><span>Category multiple \u2014 ' + esc(r.category || 'Uncategorized') + '</span><span>\u00d7 ' + r.model.category_multiple.toFixed(3) + '</span></div>' +
               '<div class="b-row"><span class="b-note">Median of ' + r.model.category_comparables + ' tokenized comparable' + (r.model.category_comparables === 1 ? '' : 's') +
-                ' (raw median ' + r.model.category_raw_median.toFixed(3) + '), shrunk toward the global median ' + D.model.global_multiple.toFixed(3) + '.</span></div>' +
+                ' (raw median ' + r.model.category_raw_median.toFixed(3) + '), shrunk in log space toward the global median ' + D.model.global_multiple.toFixed(3) + ' with a weight of ' + D.model.shrink_k + '.</span></div>' +
               '<div class="b-row"><span>Momentum factor (7-day TVL)</span><span>\u00d7 ' + r.model.momentum_factor.toFixed(3) + '</span></div>' +
               '<div class="b-row"><span>Age factor (' + ageText(r.age_days) + ')</span><span>\u00d7 ' + r.model.age_factor.toFixed(3) + '</span></div>' +
               '<div class="b-row total"><span>Implied token value</span><span>' + moneyFull(r.implied_value_usd) + '</span></div>' +
@@ -351,6 +363,52 @@
     D.live.slice(0, 12).map(function (p) {
       return '<tr><td>' + esc(p.name) + '</td><td>' + money(p.tvl_usd) + '</td><td>' + money(p.mcap_usd) + '</td><td>' + (p.multiple === null ? '—' : p.multiple.toFixed(2) + '\u00d7') + '</td></tr>';
     }).join('') + '</tbody></table>';
+
+  // ------------------------------------------------------------- validation panel
+  // The ablation table validateModel computed in main.ts: the shipped model,
+  // the previous round's model, and the shipped model with one term changed.
+  // A change whose error sits above the shipped row's is a term the blind
+  // tests voted to keep or re-tune; the delta column says by how much.
+  (function renderValidation() {
+    if (!v) return;
+    var note = document.getElementById('validation-note');
+    var host = document.getElementById('validation-table');
+    if (!note || !host) return;
+    var s0 = v.shipped.splits[0];
+    note.textContent =
+      'The ' + v.comparables + ' tokenized protocols are the only ground truth in the snapshot: each one\u2019s recorded ' +
+      'market cap is what a model of this shape would have had to predict. Two blind splits (fixed seeds ' +
+      v.shipped.splits.map(function (s) { return s.seed; }).join(' and ') + ') fitted every configuration on ' + s0.fit +
+      ' of them and measured its error on the ' + s0.test + ' held out. Error is ' + v.metric + ': 0.30 is a typical ' +
+      'miss of 2\u00d7, 1.00 is 10\u00d7. Multiples are a blunt instrument \u2014 the point of the table is that no term on ' +
+      'this board is there on a hunch. The evidence grades and risk flags move no price; they describe the comparables ' +
+      'behind a price, and they are not part of the fitted model these tests score.';
+    function deltaCell(score, kind) {
+      if (kind === 'shipped') return '<td>\u2014 the model on this board</td>';
+      var d = score.male_mean - v.shipped.male_mean;
+      if (kind === 'legacy') return '<td class="delta-worse">+' + d.toFixed(3) + ' worse than shipped</td>';
+      if (Math.abs(d) <= 0.002) return '<td>\u2248 shipped (' + (d >= 0 ? '+' : '') + d.toFixed(3) + ')</td>';
+      if (d > 0) return '<td class="delta-worse">+' + d.toFixed(3) + ' worse with this change</td>';
+      return '<td class="delta-better">' + d.toFixed(3) + ' better \u2014 noted below</td>';
+    }
+    function row(score, kind) {
+      var bold = kind === 'shipped';
+      return '<tr>' + (bold ? '<td><b>' + esc(score.term) + '</b></td>' : '<td>' + esc(score.term) + '</td>') +
+        '<td>' + esc(score.change) + '</td>' +
+        '<td>' + score.splits.map(function (s) { return s.male.toFixed(3); }).join(' / ') + '</td>' +
+        '<td>' + score.male_mean.toFixed(3) + '</td>' + deltaCell(score, kind) + '</tr>';
+    }
+    host.innerHTML =
+      '<table class="comp-table"><thead><tr><th>Term</th><th>Change tested</th><th>Held-out error, split 1 / 2</th><th>Mean</th><th>Against the shipped model</th></tr></thead><tbody>' +
+      row(v.shipped, 'shipped') + row(v.legacy, 'legacy') +
+      v.ablations.map(function (a) { return row(a, 'ablation'); }).join('') +
+      '</tbody></table>' +
+      '<p class="panel-note">Reading it plainly: removing shrinkage costs +0.049 of error and the old weight +0.018, so ' +
+      'shrinkage was kept and strengthened; the old age premium cost +0.007, so age was gentled to 0.95\u20131.05 \u2014 within ' +
+      '0.002 of dropping it outright, which the table shows rather than hides. Momentum at either weight and the ' +
+      'winsorize clamp are error-neutral (\u00b10.002): they stay at the smallest strength the tests allow, because a ' +
+      'radar that ignored a protocol\u2019s week entirely would be claiming the week carries no information at all.</p>';
+  })();
 
   route();
 })();

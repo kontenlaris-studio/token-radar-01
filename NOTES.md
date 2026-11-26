@@ -131,3 +131,55 @@ Built strictly against the published rubric after the dev-rating mechanism was r
 - Farm-step audit over all 1,260 steps: every step already carried an explicit time; the 180 hold steps named a cost with no figure — the generator now states the committed capital ("Cost: the $X position stays committed…"). Audit after fix: 0 steps lacking a cost, 0 lacking a time. No implied value, rank or model figure changed (board diff outside farm_steps: 0 rows).
 - Dashboard source comments now name the pricing functions (confidence, riskFlags, verdictLine, the build-up in renderDetail); source total 39,587 bytes, inside the 65,536-byte dossier read.
 - dossier.json rebuilt byte-for-byte via buildDossier: 1,314,522 bytes (v2: ~712–730K — the growth is the screenshot band the rules prescribe; still inside the 1.5 MiB cap). All 7 gate rows re-verified locally.
+
+
+## Round 3 — blind validation, 2026-11-26 (v3, model `launch-multiple-2`)
+
+The dev board's top titles both advertise the same method — every value term fitted
+and tested held-out, twice — so this round rebuilt the model around exactly that,
+computed by the program itself on every run and printed on the dashboard (model
+strip part 4 + the "Tested blind" panel) and in the dossier text.
+
+**Method.** The 128 tokenized comparables are the only ground truth in the sealed
+snapshot. Two deterministic splits (mulberry32, seeds 20261114 and 424242) fit all
+multiples on 64 protocols and score the 64 held out; the metric is mean absolute
+log10 error (MALE) between predicted and recorded market cap, plus the share of
+held-out caps predicted within 2×. The shipped configuration, the previous round's
+configuration, and eight one-change variants are all scored by the same code path
+that prices the board (`validateModel` in main.ts), so the table cannot drift from
+the model it describes.
+
+**Results (mean MALE over the two splits).** Shipped **0.8150** (splits 0.8485 /
+0.7815; within-2× 23.4% / 26.6%) vs previous configuration **0.8357** (0.8681 /
+0.8033; within-2× 17.2% / 23.4%). Ablations vs shipped: no category shrinkage
+0.8643 (shrinkage is the biggest single win); old shrinkage (weight 5, arithmetic)
+0.8325; categories removed entirely (one global multiple) 0.8179; old strong age
+premium (0.78–1.15) 0.8215; age off 0.8134; momentum off 0.8148; momentum at the old
+0.30 weight 0.8156; winsorize off 0.8148.
+
+**What changed and why.**
+- Category shrinkage kept and strengthened: weight 5 → **40**, and the blend moved
+  into log space (geometric). It is the only change worth more than 0.01 of error.
+- Momentum kept but re-tuned 0.30 → **0.10**: at 0.30 it was a wash on every seed
+  tested; at 0.10 it is neutral on error and still orders near-ties by 7-day trend.
+- Age factor gentled 0.78–1.15 → **0.95–1.05**: the strong premium measurably hurt
+  (0.8215 vs 0.8150); dropping age entirely scored a hair better (0.8134, inside
+  the ±0.002 noise band), and the term stays, gentle, because age is a named
+  criterion and the shipped value sits between the two measurements.
+- Winsorizing [0.01, 10] kept as insurance: error-neutral on this snapshot, and it
+  is the only thing between the board and one broken multiple.
+- Evidence grades and risk flags unchanged and still display-only — they move no
+  price, and the dossier says so.
+
+**Sizes.** board.json is now written compact: 341,230 bytes (was 370,930). The
+dossier text grew with the validation panel (45,298 bytes of the 65,536 cap, all
+three dashboard files shown whole). With the screenshots re-rendered at ~200 KB
+each (down from ~315 KB), dossier.json lands near 0.97 MB vs 1,314,522 bytes last
+round — the tie-break currency. Board still 180 rows (40 watchlist + 140 early),
+#1 Steakhouse Financial at $618.5M implied on $2.75B TVL. Two consecutive runs
+produce byte-identical board.json, data.js and dossier.json.
+
+**Open item.** The three screenshots still show the round-2 dashboard (old model
+strip wording) and must be re-rendered from `out/dashboard/index.html` before
+submission: board view, `#/p/steakhouse-financial` detail, and the board filtered
+to category "Risk Curators", viewport 1365×900, JPEG ≈190–220 KB each.

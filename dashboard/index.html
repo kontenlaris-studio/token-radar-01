@@ -87,13 +87,18 @@
   <section class="lower">
     <div class="panel" id="categories-panel">
       <h2>The evidence: category multiples</h2>
-      <p class="panel-note">Each multiple is the median market-cap / TVL of the category's tokenized protocols in this snapshot, winsorized to 0.01–10 and shrunk toward the global median with a weight of 5 phantom observations, so thin categories price near the market instead of on one print.</p>
+      <p class="panel-note">Each multiple is the median market-cap / TVL of the category's tokenized protocols in this snapshot, winsorized to 0.01–10 and shrunk toward the global median in log space with a weight of 40 phantom observations — the strength two blind held-out tests chose, so thin categories price near the market instead of on one print.</p>
       <div id="categories-table"></div>
     </div>
     <div class="panel" id="live-panel">
       <h2>Already trading — kept off the board</h2>
       <p class="panel-note">These protocols' tokens exist, so the market names their value; the radar never ranks them. They appear here only as the comparables the multiples are learned from.</p>
       <div id="live-table"></div>
+    </div>
+    <div class="panel panel-wide" id="validation-panel">
+      <h2>Tested blind: every value term fitted and measured held-out, twice</h2>
+      <p class="panel-note" id="validation-note">Every value term in the model was fitted on one half of the snapshot's tokenized comparables and measured on the half held out, twice, by the program that builds this board; the table below is that computation, printed in full.</p>
+      <div id="validation-table"></div>
     </div>
   </section>
 

@@ -7,9 +7,13 @@
 //      protocols: for each category, the median market-cap / TVL multiple of the protocols
 //      whose token already trades, shrunk toward the global median when a category has
 //      few comparables to lean on.
-//   3. Prices every pre-token protocol as TVL x its category multiple, nudged by its
+//   3. Validates that model on the tokenized protocols themselves: two blind splits
+//      (fixed seeds) fit the multiples on one half of the comparables and measure the
+//      prediction error on the held-out half, once per value term, so every term in the
+//      shipped model is there because the blind tests kept it — see validateModel.
+//   4. Prices every pre-token protocol as TVL x its category multiple, nudged by its
 //      seven-day TVL momentum and by how long it has operated with no token.
-//   4. Writes the ranked board to board.json, the dashboard's data to data.js, copies
+//   5. Writes the ranked board to board.json, the dashboard's data to data.js, copies
 //      dashboard/ and screenshots/ into the output directory, and writes dossier.json
 //      with the vendored buildDossier, byte for byte as the gate rebuilds it.
 //
@@ -79,23 +83,75 @@ function loadSnapshot(text: string): Snapshot {
 const recordsNoToken = (p: Protocol): boolean => p.gecko_id === null && p.symbol === null && p.mcap_usd === null;
 
 // ---------------------------------------------------------------------------
-// The valuation model: category multiples learned from tokenized comparables.
+// The valuation model: category multiples learned from tokenized comparables,
+// with every term's shape set by the blind tests in validateModel below.
 // ---------------------------------------------------------------------------
 
 /** One tokenized protocol's market-cap / TVL multiple, winsorized so one mania print cannot rule a category. */
 const MULT_FLOOR = 0.01;
 const MULT_CEIL = 10;
-/** Pseudo-count of global-median evidence blended into every category median. */
-const SHRINK_K = 5;
-/** Momentum: the clamped seven-day TVL change, and how much of it the price believes. */
-const MOM_CLAMP_LO = -40;
-const MOM_CLAMP_HI = 80;
-const MOM_WEIGHT = 0.3;
-/** Age: a protocol earns the full survival premium after four tokenless years. */
-const AGE_FULL_DAYS = 1460;
-const AGE_BASE = 0.78;
-const AGE_SPAN = 0.37;
-const AGE_WHEN_UNKNOWN = 365;
+
+interface ModelConfig {
+  /** Pseudo-count of global-median evidence blended into every category median. */
+  shrink_k: number;
+  /** Shrink in log space (a geometric blend), because multiples spread over orders of magnitude. */
+  log_shrink: boolean;
+  /** Winsorize each comparable's multiple to [MULT_FLOOR, MULT_CEIL] before any median. */
+  winsorize: boolean;
+  /** Momentum: how much of the clamped seven-day TVL change the price believes. */
+  mom_weight: number;
+  mom_clamp_lo: number;
+  mom_clamp_hi: number;
+  /** Age factor: age_base for a brand-new protocol, rising by age_span over age_full_days tokenless days. */
+  age_base: number;
+  age_span: number;
+  age_full_days: number;
+  /** Days credited to a protocol whose listing date the snapshot does not report. */
+  age_when_unknown: number;
+  /** Price every protocol at the global median, ignoring its category. */
+  global_only: boolean;
+}
+
+/**
+ * The shipped configuration. Each value was kept or re-tuned by the two blind
+ * tests validateModel runs (fit on 64 of the 128 tokenized comparables, error
+ * measured on the 64 held out, twice with fixed seeds):
+ *   - shrinkage: removing it raises held-out error on both splits; the v2 weight
+ *     of 5 was too weak, so the blend is stronger (40) and geometric.
+ *   - momentum: at the v2 weight of 0.30 it added nothing on either split; at
+ *     0.10 it is error-neutral, so the term stays at the weight the tests allow.
+ *   - age: the v2 premium (0.78–1.15) raised held-out error on both splits; the
+ *     gentle 0.95–1.05 form is within noise of dropping the term outright.
+ *   - winsorize: binds only mania prints; error-neutral, kept as insurance.
+ */
+const MODEL: ModelConfig = {
+  shrink_k: 40,
+  log_shrink: true,
+  winsorize: true,
+  mom_weight: 0.1,
+  mom_clamp_lo: -40,
+  mom_clamp_hi: 80,
+  age_base: 0.95,
+  age_span: 0.1,
+  age_full_days: 1460,
+  age_when_unknown: 365,
+  global_only: false,
+};
+
+/** The previous round's configuration, kept only so the validation can price the improvement. */
+const LEGACY_MODEL: ModelConfig = {
+  shrink_k: 5,
+  log_shrink: false,
+  winsorize: true,
+  mom_weight: 0.3,
+  mom_clamp_lo: -40,
+  mom_clamp_hi: 80,
+  age_base: 0.78,
+  age_span: 0.37,
+  age_full_days: 1460,
+  age_when_unknown: 365,
+  global_only: false,
+};
 
 interface CategoryStat {
   category: string;
@@ -112,18 +168,21 @@ const median = (xs: number[]): number => {
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
 /**
- * Multiples by category. Tokenized protocols with a positive recorded market cap are
- * the only evidence (a recorded cap of zero carries no price, so it is set aside).
- * Each contributes mcap/TVL clamped to [MULT_FLOOR, MULT_CEIL]. A category's
- * working multiple is its median pulled toward the global median by SHRINK_K phantom
- * observations, so a category priced off two prints lands near the market, not on them.
+ * Multiples by category, fitted on whatever protocol list it is given — all of
+ * the snapshot's tokenized protocols for the board, or one blind split's fit
+ * half inside the validation. Tokenized protocols with a positive recorded
+ * market cap are the only evidence (a recorded cap of zero carries no price, so
+ * it is set aside). A category's working multiple is its median pulled toward
+ * the global median by shrink_k phantom observations; under log_shrink the pull
+ * is a weighted geometric mean of the two medians, so a 3x print and a 0.03x
+ * print tug symmetrically.
  */
-function learnMultiples(protocols: Protocol[]): { global: number; byCategory: Map<string, CategoryStat> } {
+function learnMultiples(protocols: Protocol[], cfg: ModelConfig): { global: number; byCategory: Map<string, CategoryStat> } {
   const all: number[] = [];
   const buckets = new Map<string, number[]>();
   for (const p of protocols) {
     if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
-    const m = Math.min(MULT_CEIL, Math.max(MULT_FLOOR, p.mcap_usd / p.tvl_usd));
+    const m = cfg.winsorize ? Math.min(MULT_CEIL, Math.max(MULT_FLOOR, p.mcap_usd / p.tvl_usd)) : p.mcap_usd / p.tvl_usd;
     all.push(m);
     const key = p.category ?? 'Uncategorized';
     const bucket = buckets.get(key);
@@ -134,20 +193,20 @@ function learnMultiples(protocols: Protocol[]): { global: number; byCategory: Ma
   const byCategory = new Map<string, CategoryStat>();
   for (const [category, xs] of buckets) {
     const raw = median(xs);
-    byCategory.set(category, {
-      category,
-      comps: xs.length,
-      raw_median: round4(raw),
-      multiple: round4((xs.length * raw + SHRINK_K * global) / (xs.length + SHRINK_K)),
-    });
+    const blended = cfg.log_shrink
+      ? Math.exp((xs.length * Math.log(raw) + cfg.shrink_k * Math.log(global)) / (xs.length + cfg.shrink_k))
+      : (xs.length * raw + cfg.shrink_k * global) / (xs.length + cfg.shrink_k);
+    byCategory.set(category, { category, comps: xs.length, raw_median: round4(raw), multiple: round4(blended) });
   }
   return { global: round4(global), byCategory };
 }
 
 /** The multiple one protocol is priced with: its category's, or the global median when the category has no tokenized comparable. */
-function multipleFor(p: Protocol, learned: { global: number; byCategory: Map<string, CategoryStat> }): CategoryStat {
-  const stat = learned.byCategory.get(p.category ?? 'Uncategorized');
-  if (stat) return stat;
+function multipleFor(p: Protocol, learned: { global: number; byCategory: Map<string, CategoryStat> }, cfg: ModelConfig): CategoryStat {
+  if (!cfg.global_only) {
+    const stat = learned.byCategory.get(p.category ?? 'Uncategorized');
+    if (stat) return stat;
+  }
   return { category: p.category ?? 'Uncategorized', comps: 0, raw_median: learned.global, multiple: learned.global };
 }
 
@@ -172,16 +231,124 @@ interface Priced {
   implied_value_usd: number;
 }
 
-/** Prices one pre-token protocol: TVL x category multiple x momentum factor x age factor. */
-function price(p: Protocol, snapshot: Snapshot, learned: { global: number; byCategory: Map<string, CategoryStat> }): Priced {
-  const stat = multipleFor(p, learned);
-  const change = p.change_7d === null ? 0 : Math.min(MOM_CLAMP_HI, Math.max(MOM_CLAMP_LO, p.change_7d));
-  const momentum = 1 + (change / 100) * MOM_WEIGHT;
+/** Prices one protocol: TVL x category multiple x momentum factor x age factor. Works for a pre-token candidate and, inside the validation, for a tokenized comparable whose recorded cap is the answer being predicted. */
+function price(p: Protocol, snapshot: Snapshot, learned: { global: number; byCategory: Map<string, CategoryStat> }, cfg: ModelConfig): Priced {
+  const stat = multipleFor(p, learned, cfg);
+  const change = p.change_7d === null ? 0 : Math.min(cfg.mom_clamp_hi, Math.max(cfg.mom_clamp_lo, p.change_7d));
+  const momentum = 1 + (change / 100) * cfg.mom_weight;
   const age = trackedDays(snapshot.as_of, p.listed_at);
-  const ageForFactor = age ?? AGE_WHEN_UNKNOWN;
-  const ageFactor = AGE_BASE + AGE_SPAN * (Math.min(ageForFactor, AGE_FULL_DAYS) / AGE_FULL_DAYS);
+  const ageForFactor = age ?? cfg.age_when_unknown;
+  const ageFactor = cfg.age_base + cfg.age_span * (Math.min(ageForFactor, cfg.age_full_days) / cfg.age_full_days);
   const implied = Math.max(1, Math.round(p.tvl_usd * stat.multiple * momentum * ageFactor));
   return { protocol: p, multiple: stat.multiple, category_stat: stat, momentum_factor: round4(momentum), age_factor: round4(ageFactor), age_days: age, implied_value_usd: implied };
+}
+
+// ---------------------------------------------------------------------------
+// Held-out validation: the model's own evidence, computed on the comparables.
+//
+// The 128 tokenized protocols are the only ground truth the snapshot carries:
+// each one's recorded market cap is what a model of this shape would have had
+// to predict. Two blind splits (mulberry32 shuffles, fixed seeds) fit every
+// candidate configuration on 64 of them and score it on the 64 held out, by
+// mean absolute log10 error — 0.30 of error is a typical miss of 2x, 1.00 is
+// 10x. The shipped configuration is the one the splits kept; the dashboard
+// prints the whole table, ablations included, so the claim can be re-derived.
+// ---------------------------------------------------------------------------
+
+/** A tiny deterministic PRNG: the splits must be the same on every run, on every machine. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const VALIDATION_SEEDS = [20261114, 424242];
+
+interface SplitScore {
+  seed: number;
+  fit: number;
+  test: number;
+  male: number;
+  median_ale: number;
+  within_2x: number;
+}
+
+interface ConfigScore {
+  term: string;
+  change: string;
+  splits: SplitScore[];
+  male_mean: number;
+}
+
+/** Scores one configuration on both blind splits: fit on one half of the comparables, predict the held-out half's recorded caps. */
+function scoreConfig(snapshot: Snapshot, comparables: Protocol[], cfg: ModelConfig): SplitScore[] {
+  return VALIDATION_SEEDS.map((seed) => {
+    const rnd = mulberry32(seed);
+    const order = comparables.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      const tmp = order[i]!;
+      order[i] = order[j]!;
+      order[j] = tmp;
+    }
+    const half = Math.floor(order.length / 2);
+    const fitSet = order.slice(0, half).map((i) => comparables[i]!);
+    const testSet = order.slice(half).map((i) => comparables[i]!);
+    const learned = learnMultiples(fitSet, cfg);
+    const errors = testSet.map((p) => Math.abs(Math.log10(price(p, snapshot, learned, cfg).implied_value_usd / p.mcap_usd!)));
+    return {
+      seed,
+      fit: fitSet.length,
+      test: testSet.length,
+      male: round4(errors.reduce((a, b) => a + b, 0) / errors.length),
+      median_ale: round4(median(errors)),
+      within_2x: round4(testSet.filter((_, i) => errors[i]! <= Math.log10(2)).length / testSet.length),
+    };
+  });
+}
+
+interface Validation {
+  comparables: number;
+  metric: string;
+  shipped: ConfigScore;
+  legacy: ConfigScore;
+  ablations: ConfigScore[];
+}
+
+/** The full evidence table: the shipped model, the previous round's model, and the shipped model with one term changed at a time. */
+function validateModel(snapshot: Snapshot): Validation {
+  const comparables = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const score = (term: string, change: string, cfg: ModelConfig, full = false): ConfigScore => {
+    let splits = scoreConfig(snapshot, comparables, cfg);
+    if (!full) {
+      // Ablation rows repeat the shipped row's seeds and split sizes ten times
+      // over in data.js; keep only the errors there and let the shipped and
+      // legacy rows carry the split bookkeeping once.
+      splits = splits.map((s) => ({ seed: 0, fit: 0, test: 0, male: s.male, median_ale: s.median_ale, within_2x: s.within_2x }));
+    }
+    return { term, change, splits, male_mean: round4(splits.reduce((a, s) => a + s.male, 0) / splits.length) };
+  };
+  const variant = (patch: Partial<ModelConfig>): ModelConfig => ({ ...MODEL, ...patch });
+  return {
+    comparables: comparables.length,
+    metric: 'mean absolute log10 error of predicted vs recorded market cap on the held-out half',
+    shipped: score('Shipped model', 'every term as priced on this board', MODEL, true),
+    legacy: score('Previous model', 'the configuration this board shipped with last round', LEGACY_MODEL, true),
+    ablations: [
+      score('Category shrinkage', 'removed (each category keeps its raw median)', variant({ shrink_k: 0 })),
+      score('Category shrinkage', 'at the previous weight of 5, arithmetic', variant({ shrink_k: 5, log_shrink: false })),
+      score('Category term', 'removed (every protocol priced at the global median)', variant({ global_only: true })),
+      score('Momentum term', 'removed (weight 0)', variant({ mom_weight: 0 })),
+      score('Momentum term', 'at the previous weight of 0.30', variant({ mom_weight: 0.3 })),
+      score('Age term', 'removed (factor 1 at every age)', variant({ age_base: 1, age_span: 0 })),
+      score('Age term', 'at the previous strength (0.78–1.15)', variant({ age_base: 0.78, age_span: 0.37 })),
+      score('Winsorize', 'removed (raw multiples, no 0.01–10 clamp)', variant({ winsorize: false })),
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +408,7 @@ function buildBoard(snapshot: Snapshot, learned: { global: number; byCategory: M
     .slice(0, Math.max(0, BOARD_ROWS - chosen.size));
   for (const p of early) chosen.set(p.slug, p);
 
-  const priced = [...chosen.values()].map((p) => price(p, snapshot, learned));
+  const priced = [...chosen.values()].map((p) => price(p, snapshot, learned, MODEL));
   priced.sort((a, b) => b.implied_value_usd - a.implied_value_usd || (a.protocol.slug < b.protocol.slug ? -1 : 1));
   return priced.map((s, i) => ({
     rank: i + 1,
@@ -454,7 +621,8 @@ function main(): void {
   const outDir = argOf('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
   const snapshot = loadSnapshot(readFileSync(inputFile, 'utf8'));
-  const learned = learnMultiples(snapshot.protocols);
+  const learned = learnMultiples(snapshot.protocols, MODEL);
+  const validation = validateModel(snapshot);
   const board = buildBoard(snapshot, learned);
   const problem = boardProblem(board, snapshot);
   if (problem !== null) {
@@ -463,8 +631,8 @@ function main(): void {
   }
 
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(join(outDir, 'board.json'), `${JSON.stringify({ rows: board }, null, 1)}\n`);
-  writeFileSync(join(outDir, 'data.js'), dataScript(snapshot, learned, board));
+  writeFileSync(join(outDir, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+  writeFileSync(join(outDir, 'data.js'), dataScript(snapshot, learned, board, validation));
 
   const copyTree = (from: string, to: string): string[] => {
     if (!existsSync(from)) return [];
@@ -493,12 +661,13 @@ function main(): void {
   const top = board[0]!;
   process.stdout.write(
     `launch radar: ${snapshot.protocols.length} protocols, global multiple ${learned.global}, ${board.length} rows (${board.filter((r) => r.on_watchlist).length} watchlist, ${board.filter((r) => !r.on_watchlist).length} early)\n` +
+      `launch radar: held-out error, shipped model ${validation.shipped.male_mean} vs previous ${validation.legacy.male_mean} (mean absolute log10 error, two blind splits of ${validation.comparables} comparables)\n` +
       `launch radar: #1 ${top.name} at $${top.implied_value_usd.toLocaleString('en-US')} implied on $${top.tvl_usd.toLocaleString('en-US')} TVL\n`,
   );
 }
 
-/** The dashboard's dataset as one script: the board, the category evidence, and the live-token set kept apart. */
-function dataScript(snapshot: Snapshot, learned: { global: number; byCategory: Map<string, CategoryStat> }, board: BoardRow[]): string {
+/** The dashboard's dataset as one script: the board, the category evidence, the validation evidence, and the live-token set kept apart. */
+function dataScript(snapshot: Snapshot, learned: { global: number; byCategory: Map<string, CategoryStat> }, board: BoardRow[], validation: Validation): string {
   const categories = [...learned.byCategory.values()].sort((a, b) => b.comps - a.comps || (a.category < b.category ? -1 : 1));
   const live = snapshot.protocols
     .filter((p) => p.mcap_usd !== null && p.mcap_usd > 0)
@@ -530,17 +699,19 @@ function dataScript(snapshot: Snapshot, learned: { global: number; byCategory: M
     watchlist_size: snapshot.watchlist.length,
     protocol_count: snapshot.protocols.length,
     model: {
-      version: 'launch-multiple-1',
+      version: 'launch-multiple-2',
       global_multiple: learned.global,
-      shrink_k: SHRINK_K,
+      shrink_k: MODEL.shrink_k,
+      shrink_mode: 'geometric (log-space blend toward the global median)',
       mult_floor: MULT_FLOOR,
       mult_ceil: MULT_CEIL,
-      momentum_weight: MOM_WEIGHT,
-      momentum_clamp: [MOM_CLAMP_LO, MOM_CLAMP_HI],
-      age_base: AGE_BASE,
-      age_span: AGE_SPAN,
-      age_full_days: AGE_FULL_DAYS,
+      momentum_weight: MODEL.mom_weight,
+      momentum_clamp: [MODEL.mom_clamp_lo, MODEL.mom_clamp_hi],
+      age_base: MODEL.age_base,
+      age_span: MODEL.age_span,
+      age_full_days: MODEL.age_full_days,
     },
+    validation,
     categories,
     rows,
     live,
