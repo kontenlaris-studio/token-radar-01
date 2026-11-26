@@ -1,3 +1,17 @@
+<div align="center">
+
+<img src="assets/logo.png?v=1" width="280">
+
+<p><em>A token launch radar ranking 180 pre-token protocols by implied value from a sealed DefiLlama snapshot, with per-protocol farm plans.</em></p>
+
+<p>
+<img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&labelColor=FF7A00&color=0A1931" alt="TypeScript">
+<img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge&labelColor=FF7A00&color=0A1931" alt="MIT License">
+<img src="https://img.shields.io/badge/By-Kontenlaris%20Studio-orange?style=for-the-badge&labelColor=FF7A00&color=0A1931" alt="By Kontenlaris Studio">
+</p>
+
+</div>
+
 # token-radar-01
 
 [![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
